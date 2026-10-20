@@ -1,0 +1,397 @@
+---
+title: "Final Project"
+author: "Sean Gee"
+date: "2026-05-30"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Dataset: CPIAUCSL Consumer Price Index
+
+## Research Question: How badly did historical inflation models miss the COVID-era spike and did inflation rules permanently change?
+
+
+```{r, message=FALSE, warning=FALSE}
+library(readxl)
+library(forecast)
+library(tseries)
+library(zoo)
+```
+
+```{r, message=FALSE, warning=FALSE}
+cpi_raw <- read_excel("../data/CPIAUCSL.xlsx", sheet = "Monthly")
+names(cpi_raw) <- c("date", "cpi")
+cpi_raw$date <- as.Date(cpi_raw$date)
+```
+
+```{r, message=FALSE, warning=FALSE}
+cpi_ts <- ts(
+  cpi_raw$cpi,
+  start = c(as.integer(format(cpi_raw$date[1], "%Y")),
+            as.integer(format(cpi_raw$date[1], "%m"))),
+  frequency = 12
+)
+
+cpi_main <- window(cpi_ts, start = c(1960, 1), end = c(2024, 12))
+log_cpi <- log(cpi_main)
+```
+
+
+## EDA
+
+General Timeline
+```{r,message=FALSE, warning=FALSE}
+plot(cpi_main,
+     main = "US CPI, 1960–2024",
+     ylab = "CPI Index",
+     xlab = "Year",
+     col = "blue",
+     lwd = 1.5)
+abline(v = c(1973.75, 1979.5, 2008.75, 2020.25, 2021.5),
+       col = c("orange", "orange", "red", "darkgreen", "darkgreen"),
+       lty = 2)
+legend("topleft",
+       legend = c("CPI", "Oil Shocks", "GFC", "COVID"),
+       col = c("blue", "orange", "red", "darkgreen"),
+       lty = c(1, 2, 2, 2),
+       bty = "n")
+```
+
+```{r}
+# log-difference = approximate monthly inflation %
+diff_log_cpi <- diff(log_cpi) * 100
+plot(diff_log_cpi,
+     main = "month-over-month inflation: diff(log CPI)",
+     ylab = "% Change",
+     xlab = "Year",
+     col = "black",
+     lwd = 1)
+
+abline(h = 0, col = "red", lty = 2)
+```
+
+```{r}
+# 12 month rolling inflation
+rolling <- rollapply(diff_log_cpi, width = 12, FUN = sum, align = "right")
+rolling <- ts(rolling, start = c(1961, 1), frequency = 12)
+plot(rolling,
+     main = "12-Month Rolling Inflation",
+     ylab = "Annual Inflation Percentage",
+     xlab = "Year",
+     col = "red",
+     lwd = 1.5)
+
+abline(h = 2, col = "blue", lty = 2)
+```
+
+```{r, echo=FALSE}
+#Inflation Means
+
+# PRE COVID: 1960-2019
+cat("Pre-COVID mean:",
+    round(mean(window(diff_log_cpi, end = c(2019, 12))), 3),
+    "sd:",
+    round(sd(window(diff_log_cpi, end = c(2019, 12))), 3), "\n")
+
+# COVID ERA: 2020-2024
+cat("COVID-era mean:",
+    round(mean(window(diff_log_cpi, start = c(2020, 1))), 3),
+    "sd:",
+    round(sd(window(diff_log_cpi, start = c(2020, 1))), 3), "\n")
+```
+
+
+```{r}
+# Creating pre_log and Running Structural Break Analysis
+# data from the start of your dataset up to December 2019
+pre_log <- window(log_cpi, end = c(2019, 12))
+
+# fit your optimized model structure strictly on the pre-COVID data
+mod_pre_covid <- Arima(pre_log, 
+                       order = c(2, 2, 1), 
+                       seasonal = list(order = c(2, 0, 0), period = 12))
+summary(mod_pre_covid)
+```
+
+
+
+
+## Stationarity Tests
+```{r}
+#ADF on log cpi
+print(adf.test(log_cpi, alternative = "stationary"))
+```
+
+```{r}
+#KPSS on log cpi
+print(kpss.test(log_cpi, null = "Level"))
+```
+
+Based on the ADF and KPSS tests, log(CPI) is non-stationary. Therefore we take the first difference of log(CPI) to analyze month-over-month inflation.
+
+```{r}
+# ADF on diff(log CPI)
+print(adf.test(diff_log_cpi, alternative = "stationary"))
+```
+
+```{r}
+# KPSS on diff(log CPI)
+print(kpss.test(diff_log_cpi, null = "Level"))
+```
+
+While the ADF test on the first difference of Log CPI yielded a stationary p-value of 0.02, the KPSS test rejected stationarity (p = 0.01). This statistical contradiction indicates that a single regular difference was insufficient to completely eliminate the deep, persistent structural trend in historical inflation. To resolve this conflict and ensure a structurally stable framework, a second regular difference (d=2) was applied, which satisfied both criteria.
+
+```{r, echo=FALSE}
+cat("\nSuggested regular differences:", ndiffs(log_cpi), "\n")
+cat("Suggested seasonal differences:", nsdiffs(cpi_main), "\n")
+```
+
+We look at the suggested number of differences to achieve stationarity. The ndiffs function suggests 2 regular differences, while nsdiffs suggests no seasonal differencing is needed.
+
+As a result, we plug in 2 regular differences to achieve stationarity for the final model.
+```{r}
+final_df <- diff(log_cpi, differences = 2)
+```
+
+## ACF and PACF Plots
+
+```{r}
+par(mfrow = c(2, 1))
+acf(final_df, lag.max = 36, main = "ACF of diff(log CPI, d=2)")
+pacf(final_df, lag.max = 36, main = "PACF of diff(log CPI, d=2)")
+par(mfrow = c(2, 1))
+
+
+```
+
+
+
+## Spectral Analysis
+```{r}
+par(mfrow = c(1, 2))
+spectrum(final_df,
+         main = "Raw Periodogram: Inflation",
+         xlab = "Frequency",
+         ylab = "Spectrum")
+spectrum(final_df,
+         spans = c(3, 5),
+         main = "Smoothed Periodogram: Inflation",
+         xlab = "Frequency",
+         ylab = "Spectrum")
+par(mfrow = c(1, 1))
+```
+
+## Model Selection with Training/Testing
+```{r}
+train <- window(log_cpi, start = c(1960, 1), end = c(2022, 12))
+test  <- window(log_cpi, start = c(2023, 1), end = c(2024, 12))
+h <- length(test)
+```
+
+
+## Candidate ARIMA Models
+```{r}
+# model A: auto.arima 
+A <- auto.arima(train,
+                   d = 2,              
+                   seasonal = FALSE,  
+                   max.p = 5,
+                   max.q = 5,
+                   stepwise = FALSE,
+                   approximation = FALSE,
+                   ic = "aic")
+summary(A)
+```
+
+```{r}
+# model B: ARIMA(3,2,0)
+B <- Arima(train, order = c(3, 2, 0))
+summary(B)
+```
+```{r}
+# model C: ARIMA(4,2,0)
+C <- Arima(train, order = c(4, 2, 0))
+summary(C)
+```
+
+```{r}
+# model D: ARIMA(3,2,1)
+D <- Arima(train, order = c(3, 2, 1))
+summary(D)
+```
+
+## Residual Diagnostics
+```{r}
+check <- function(model, name) {
+  r <- residuals(model)
+  df <- sum(model$arma[1:4])
+  lb <- Box.test(r, lag = 20, type = "Ljung-Box", fitdf = df)
+  cat(sprintf("%-35s LB = %6.2f   p = %.4f\n",
+              name, lb$statistic, lb$p.value))
+}
+
+check(A, "Model A: auto.arima")
+check(B, "Model B: ARIMA(3,2,0)")
+check(C, "Model C: ARIMA(4,2,0)")
+check(D, "Model D: ARIMA(3,2,1)")
+```
+
+
+
+```{r}
+checkresiduals(A, lag = 24)
+checkresiduals(B, lag = 24)
+
+```
+The Ljung–Box test rejected the null hypothesis of white noise residuals (p < 0.001), indicating that the ARIMA(0,2,3) model failed to capture all temporal dependence in the series. Therefore, the model was not considered adequate.
+
+
+## Updating to Seasonal SARIMA based on Residual Performance
+```{r}
+#A
+modA <- auto.arima(train,
+                   d = 2,
+                   seasonal = TRUE,
+                   stepwise = FALSE,
+                   approximation = FALSE,
+                   ic = "aic")
+summary(modA)
+
+#B
+modB <- Arima(train, order = c(3, 2, 1))
+summary(modB)
+
+#C
+modC <- Arima(train, order = c(3, 2, 2))
+summary(modC)
+
+#D
+modD <- Arima(train, order = c(4, 2, 2))
+summary(modD)
+```
+
+```{r}
+check(modA, "Model A: auto.arima with Seasonality")
+check(modB, "Model B: ARIMA(3,2,1)")
+check(modC, "Model C: ARIMA(3,2,2)")
+check(modD, "Model D: ARIMA(4,2,2)")
+```
+
+```{r}
+checkresiduals(modA, lag = 24)
+checkresiduals(modB, lag = 24)
+```
+
+```{r}
+model_comparison <- data.frame(
+  Model = c("Model A ", "Model B", "Model C", "Model D"),
+  Specification = c("ARIMA(2,2,1)(2,0,0)[12]", "ARIMA(3,2,1)", "ARIMA(3,2,2)", "ARIMA(4,2,2)"),
+  AIC = c(AIC(modA), AIC(modB), AIC(modC), AIC(modD)),
+  BIC = c(BIC(modA), BIC(modB), BIC(modC), BIC(modD)),
+  Train_RMSE = c(accuracy(modA)[2], accuracy(modB)[2], accuracy(modC)[2], accuracy(modD)[2])
+)
+model_comparison
+```
+
+
+
+
+Now, looking at the updated seasonal SARIMA, I can say that Model A with ARIMA(2,2,1)(2,0,0)[12] achieves the lowest AIC, training RMSE and Ljung-Box test statistic among all candidates, though it still does not pass the white noise test. Still, no candidate model fully satisfies the white noise assumption, which is itself an important finding: the 60 year inflation series contains volatility clustering and regime-dependent dynamics that a linear ARIMA framework cannot completely capture. As a result, I decided to select Model A as the best available specification on the basis of AIC, parsimony, and relative residual performance.
+
+
+
+## Volatility Analysis and GARCH Modeling
+```{r}
+train_residuals <- residuals(modA)
+
+# run the Ljung-Box test on SQUARED residuals to check for ARCH effects.
+sq_resid_lb <- Box.test(train_residuals^2, lag = 12, type = "Ljung-Box")
+sq_resid_lb
+plot(train_residuals^2, 
+     main = "Squared Training Residuals",
+     xlab = "Year", 
+     ylab = "Squared Residuals", 
+     col = "red",
+     lwd = 1)
+```
+
+## Test Set Evaluation 2023-2024
+```{r}
+h_test <- length(test)
+cpi_forecasts <- forecast(modA, h = h_test)
+test_accuracy <- accuracy(cpi_forecasts, test)
+test_accuracy
+```
+Although the ARIMA(0,2,3) model fit the training data well, its out-of-sample forecasting performance deteriorated substantially on the 2023 2024 test set. The test RMSE increased considerably relative to the training RMSE, and the forecast errors exhibited strong autocorrelation (ACF1 = 0.88). In addition, Theil’s U statistic greatly exceeded 1, indicating that the model performed worse than a naive benchmark forecast. These results suggest that the model was misspecified, likely due to over-differencing and structural changes in inflation dynamics during the post-COVID period.
+
+
+## Plotting Forecasts vs Actuals
+```{r}
+plot(cpi_forecasts, main = "CPI Forecast vs Actual Test Data 2023-2024",
+     xlab = "Year", ylab = "Log CPI", col = "black")
+lines(test, col = "red", lwd = 2)
+legend("topleft", legend = c("Historical Train", "Forecast", "Actual Test Data"),
+       col = c("black", "blue", "red"), lty = 1, lwd = c(1, 1, 2))
+```
+
+## Model Refitting on Full Data
+```{r}
+final_mod <- Arima(log_cpi, order = c(2, 2, 1), seasonal = list(order = c(2, 0, 0), period = 12))
+final_mod
+```
+
+## Pre-COVID vs. Post-COVID Structural Break Analysis
+
+```{r}
+# forecast 60 months forward to cover the pandemic period (2020 through 2024)
+break_forecast <- forecast(mod_pre_covid, h = 60)
+
+# plot the old forecast against the actual post 2020 reality
+plot(break_forecast, 
+     main = "Structural Break Check: Pre-COVID Model vs. Reality",
+     xlab = "Year", 
+     ylab = "Log CPI", 
+     col = "purple")
+
+# superimpose the actual true historical reality over the forecast fan chart
+lines(log_cpi, col = "red", lwd = 2) 
+legend("topleft", 
+       legend = c("Pre-COVID Model Prediction", "Actual Realized Reality"),
+       col = c("blue", "red"), 
+       lty = 1, 
+       lwd = c(1, 2))
+```
+
+
+
+## Final Forecasts for 2025-2026
+```{r}
+# Use the full model to forecast 24 months 
+future_forecast <- forecast(final_mod, h = 24)
+future_forecast
+
+plot(future_forecast, 
+     main = "Final 24-Month CPI Forecast Horizon",
+     xlab = "Year", 
+     ylab = "Log CPI", 
+     col = "darkblue",
+     lwd = 2)
+```
+
+## Implied Annual Inflation Rates from Forecasts
+```{r}
+# Calculates the year-over-year percentage growth rate implied point estimates
+implied_inflation <- diff(future_forecast$mean, lag = 12) * 100
+round(implied_inflation, 2)
+```
+
+
+
+
+
+
+
+
+
+
