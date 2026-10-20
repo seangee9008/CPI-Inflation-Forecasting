@@ -1,6 +1,5 @@
 # How Did Historical Inflation Models Miss the COVID-Era Spike?
 
-**UCLA Stats 170 (Time Series Analysis) — Final Project** · Sean Gee · Spring 2026
 
 Did the post-pandemic inflation surge permanently change how U.S. inflation behaves? This project fits SARIMA models to 65 years of monthly CPI data (1960–2024) and asks two questions:
 
